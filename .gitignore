@@ -3,6 +3,8 @@ node_modules/
 frontend/node_modules/
 .next/
 out/
+# Tools (portable git bootstrap)
+.tools/
 frontend/.npm-bootstrap/
 
 # Python
