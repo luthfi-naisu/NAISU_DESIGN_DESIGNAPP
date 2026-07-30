@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useJobPolling } from "@/hooks/useJobPolling";
 import { useMutation } from "@tanstack/react-query";
 import { Loader2, Search } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { ViewHistoryButton } from "@/components/HistoryLogsPanel";
+import { useHistory } from "@/contexts/HistoryContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -25,6 +27,7 @@ type Video = {
 };
 
 export function StockSearchGrid() {
+  const { logActivity, updateActivityByJobId } = useHistory();
   const [query, setQuery] = useState("");
   const [searchId, setSearchId] = useState<string | null>(null);
   const [videos, setVideos] = useState<Video[]>([]);
@@ -32,11 +35,44 @@ export function StockSearchGrid() {
   const [gifJobId, setGifJobId] = useState<string | null>(null);
   const gifJob = useJobPolling(gifJobId);
 
+  useEffect(() => {
+    if (!gifJobId || !gifJob) return;
+    if (gifJob.status === "done") {
+      void updateActivityByJobId(gifJobId, {
+        status: "done",
+        description: "GIF conversion selesai",
+        result_url: api.gifDownloadUrl(gifJobId),
+      });
+    } else if (gifJob.status === "failed") {
+      void updateActivityByJobId(gifJobId, {
+        status: "failed",
+        error_message: gifJob.error ?? "GIF conversion failed",
+      });
+    }
+  }, [gifJobId, gifJob, updateActivityByJobId]);
+
   const searchMutation = useMutation({
     mutationFn: () => api.searchAssets(query),
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       setVideos(data.videos);
       setSearchId(data.search_id);
+      await logActivity({
+        type: "asset-search",
+        status: "done",
+        title: "Stock Search",
+        input_summary: query,
+        description: `${data.total_count} hasil ditemukan`,
+        metadata: { search_id: data.search_id, total_count: data.total_count },
+      });
+    },
+    onError: async (err) => {
+      await logActivity({
+        type: "asset-search",
+        status: "failed",
+        title: "Stock Search",
+        input_summary: query,
+        error_message: (err as Error).message,
+      });
     },
   });
 
@@ -46,21 +82,64 @@ export function StockSearchGrid() {
         video_id: videoId,
         search_id: searchId,
       }),
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       setLicensed((prev) => ({
         ...prev,
         [data.video_id]: data.local_path,
       }));
+      await logActivity({
+        type: "shutterstock-license",
+        status: "done",
+        title: "Stock License",
+        input_summary: `Video ID ${data.video_id}`,
+        description: "Video berhasil dilicense & download",
+        job_id: data.job_id,
+        metadata: {
+          video_id: data.video_id,
+          license_id: data.license_id,
+          local_path: data.local_path,
+        },
+      });
+    },
+    onError: async (err, videoId) => {
+      await logActivity({
+        type: "shutterstock-license",
+        status: "failed",
+        title: "Stock License",
+        input_summary: `Video ID ${videoId}`,
+        error_message: (err as Error).message,
+      });
     },
   });
 
   const gifMutation = useMutation({
     mutationFn: (localPath: string) =>
       api.mp4ToGif({ local_path: localPath, remove_background: false }),
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       setGifJobId(data.job_id);
+      await logActivity({
+        type: "mp4-to-gif",
+        status: "processing",
+        title: "Stock → GIF",
+        input_summary: "Licensed stock video",
+        job_id: data.job_id,
+      });
+    },
+    onError: async (err) => {
+      await logActivity({
+        type: "mp4-to-gif",
+        status: "failed",
+        title: "Stock → GIF",
+        error_message: (err as Error).message,
+      });
     },
   });
+
+  const showHistoryCta =
+    searchMutation.isSuccess ||
+    licenseMutation.isSuccess ||
+    gifJob?.status === "done" ||
+    gifJob?.status === "failed";
 
   return (
     <div className="space-y-4">
@@ -95,6 +174,11 @@ export function StockSearchGrid() {
             <p className="mt-2 text-sm text-red-400">
               {(searchMutation.error as Error).message}
             </p>
+          )}
+          {showHistoryCta && (
+            <div className="mt-3">
+              <ViewHistoryButton />
+            </div>
           )}
         </CardContent>
       </Card>
@@ -162,11 +246,14 @@ export function StockSearchGrid() {
                     Convert to GIF
                   </Button>
                   {gifJobId && gifJob?.status === "done" && (
-                    <Button asChild size="sm" variant="outline" className="w-full">
-                      <a href={api.gifDownloadUrl(gifJobId)} download>
-                        Download GIF
-                      </a>
-                    </Button>
+                    <div className="flex flex-col gap-2">
+                      <Button asChild size="sm" variant="outline" className="w-full">
+                        <a href={api.gifDownloadUrl(gifJobId)} download>
+                          Download GIF
+                        </a>
+                      </Button>
+                      <ViewHistoryButton className="w-full" />
+                    </div>
                   )}
                   {gifJobId && gifJob && gifJob.status !== "done" && (
                     <p className="text-xs text-muted-foreground">

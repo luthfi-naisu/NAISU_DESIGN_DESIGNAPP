@@ -5,6 +5,8 @@ import { useMutation } from "@tanstack/react-query";
 import { FileVideo, Loader2 } from "lucide-react";
 import { api, parseTimestamp } from "@/lib/api-client";
 import type { SelectedMedia } from "@/components/MediaDropzone";
+import { ViewHistoryButton } from "@/components/HistoryLogsPanel";
+import { useHistory } from "@/contexts/HistoryContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,6 +29,7 @@ export function YouTubeToGifForm({
   initialUrl = "",
   localVideo = null,
 }: YouTubeToGifFormProps) {
+  const { logActivity, updateActivityByJobId } = useHistory();
   const [url, setUrl] = useState(initialUrl);
   const [startTime, setStartTime] = useState("0:00");
   const [endTime, setEndTime] = useState("0:05");
@@ -59,25 +62,39 @@ export function YouTubeToGifForm({
     };
   }, []);
 
-  const startPolling = useCallback((id: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      try {
-        const job = await api.getJob(id);
-        setJobStatus({
-          status: job.status,
-          progress: job.progress,
-          message: job.message,
-          error: job.error,
-        });
-        if (job.status === "done" || job.status === "failed") {
-          if (pollRef.current) clearInterval(pollRef.current);
+  const startPolling = useCallback(
+    (id: string) => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(async () => {
+        try {
+          const job = await api.getJob(id);
+          setJobStatus({
+            status: job.status,
+            progress: job.progress,
+            message: job.message,
+            error: job.error,
+          });
+          if (job.status === "done") {
+            if (pollRef.current) clearInterval(pollRef.current);
+            await updateActivityByJobId(id, {
+              status: "done",
+              description: job.message,
+              result_url: api.gifDownloadUrl(id),
+            });
+          } else if (job.status === "failed") {
+            if (pollRef.current) clearInterval(pollRef.current);
+            await updateActivityByJobId(id, {
+              status: "failed",
+              error_message: job.error ?? job.message,
+            });
+          }
+        } catch {
+          /* keep polling */
         }
-      } catch {
-        /* keep polling */
-      }
-    }, 2000);
-  }, []);
+      }, 2000);
+    },
+    [updateActivityByJobId],
+  );
 
   const uploadMutation = useMutation({
     mutationFn: (file: File) => api.uploadMp4(file),
@@ -97,13 +114,25 @@ export function YouTubeToGifForm({
         quality,
       });
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       setJobId(data.job_id);
       setJobStatus({
         status: data.status,
         progress: 0,
         message: "Job queued...",
         error: null,
+      });
+      await logActivity({
+        type: "youtube-to-gif",
+        status: "processing",
+        title: "YouTube → GIF",
+        input_summary: `${url} (${startTime} – ${endTime})`,
+        job_id: data.job_id,
+        metadata: {
+          width,
+          quality,
+          remove_background: removeBackground,
+        },
       });
       startPolling(data.job_id);
     },
@@ -112,7 +141,9 @@ export function YouTubeToGifForm({
   const isProcessing =
     youtubeMutation.isPending ||
     uploadMutation.isPending ||
-    (jobStatus && !["done", "failed"].includes(jobStatus.status));
+    Boolean(
+      jobStatus && !["done", "failed"].includes(jobStatus.status),
+    );
 
   const handleConvert = async () => {
     if (localPath || localVideo) {
@@ -137,6 +168,14 @@ export function YouTubeToGifForm({
           message: "Converting MP4 to GIF...",
           error: null,
         });
+        await logActivity({
+          type: "mp4-to-gif",
+          status: "processing",
+          title: "MP4 → GIF",
+          input_summary: localVideo?.file.name ?? path,
+          job_id: data.job_id,
+          metadata: { width, quality, remove_background: removeBackground },
+        });
         startPolling(data.job_id);
       } catch (err) {
         setJobStatus({
@@ -144,6 +183,13 @@ export function YouTubeToGifForm({
           progress: 0,
           message: "Conversion failed",
           error: (err as Error).message,
+        });
+        await logActivity({
+          type: "mp4-to-gif",
+          status: "failed",
+          title: "MP4 → GIF",
+          input_summary: localVideo?.file.name ?? localPath ?? "local file",
+          error_message: (err as Error).message,
         });
       }
       return;
@@ -285,12 +331,18 @@ export function YouTubeToGifForm({
                   alt="Generated GIF"
                   className="max-h-64 rounded-md border"
                 />
-                <Button asChild variant="secondary">
-                  <a href={api.gifDownloadUrl(jobId)} download>
-                    Download GIF
-                  </a>
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button asChild variant="secondary">
+                    <a href={api.gifDownloadUrl(jobId)} download>
+                      Download GIF
+                    </a>
+                  </Button>
+                  <ViewHistoryButton />
+                </div>
               </div>
+            )}
+            {jobStatus.status === "failed" && (
+              <ViewHistoryButton className="mt-2" />
             )}
           </div>
         )}

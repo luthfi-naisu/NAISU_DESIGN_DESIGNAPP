@@ -1,6 +1,6 @@
 "use client";
 
-import { Film, ImageUp, Sparkles, Youtube } from "lucide-react";
+import { Film, History, ImageUp, Sparkles, Youtube } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YouTubeToGifForm } from "@/components/YouTubeToGifForm";
 import { StockSearchGrid } from "@/components/StockSearchGrid";
@@ -10,6 +10,9 @@ import {
   UpscalePanel,
   type SelectedMedia,
 } from "@/components/MediaDropzone";
+import { HistoryLogsPanel } from "@/components/HistoryLogsPanel";
+import { useHistory } from "@/contexts/HistoryContext";
+import { Button } from "@/components/ui/button";
 import { useState } from "react";
 
 export function Dashboard() {
@@ -19,6 +22,7 @@ export function Dashboard() {
     null,
   );
   const [imageFile, setImageFile] = useState<File | null>(null);
+  const { openHistory } = useHistory();
 
   return (
     <div className="flex min-h-screen">
@@ -33,11 +37,26 @@ export function Dashboard() {
           <p className="flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-foreground">
             <Film className="h-4 w-4" /> Local-first pipeline
           </p>
+          <button
+            type="button"
+            onClick={openHistory}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <History className="h-4 w-4" /> History Logs
+          </button>
         </nav>
       </aside>
 
       <main className="flex-1 p-6 md:p-8">
         <div className="mx-auto max-w-5xl space-y-6">
+          <div className="flex items-center justify-between gap-4 md:hidden">
+            <h1 className="text-lg font-bold">Design App</h1>
+            <Button variant="outline" size="sm" onClick={openHistory}>
+              <History className="mr-2 h-4 w-4" />
+              History
+            </Button>
+          </div>
+
           <MediaDropzone
             onYouTubeUrl={(url) => {
               setYtUrl(url);
@@ -92,6 +111,8 @@ export function Dashboard() {
           </Tabs>
         </div>
       </main>
+
+      <HistoryLogsPanel />
     </div>
   );
 }

@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { FileVideo, ImageIcon, Loader2, Upload, X, Youtube } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { ViewHistoryButton } from "@/components/HistoryLogsPanel";
+import { useHistory } from "@/contexts/HistoryContext";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -45,6 +47,7 @@ export function MediaDropzone({
   onYouTubeUrl,
   onMediaSelected,
 }: MediaDropzoneProps) {
+  const { logActivity } = useHistory();
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragActive, setIsDragActive] = useState(false);
   const [selected, setSelected] = useState<SelectedMedia | null>(null);
@@ -72,6 +75,17 @@ export function MediaDropzone({
           };
           setSelected(media);
           onMediaSelected?.(media);
+          await logActivity({
+            type: "upload-mp4",
+            status: "done",
+            title: "Upload MP4",
+            input_summary: file.name,
+            description: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
+            metadata: {
+              filename: result.filename,
+              local_path: result.local_path,
+            },
+          });
         } catch (err) {
           setError(
             (err as Error).message ||
@@ -92,7 +106,7 @@ export function MediaDropzone({
 
       setError("Format tidak didukung. Gunakan MP4, JPG, atau PNG.");
     },
-    [onMediaSelected, uploadMutation],
+    [onMediaSelected, uploadMutation, logActivity],
   );
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -240,14 +254,19 @@ export function MediaDropzone({
             )}
 
             {selected.kind === "video" && selected.localPath && (
-              <p className="mt-2 text-xs text-green-400">
-                Upload berhasil — lanjut ke tab YouTube GIF untuk convert
-              </p>
+              <div className="mt-2 space-y-2">
+                <p className="text-xs text-green-400">
+                  Upload berhasil — lanjut ke tab YouTube GIF untuk convert
+                </p>
+                <ViewHistoryButton />
+              </div>
             )}
             {selected.kind === "image" && (
-              <p className="mt-2 text-xs text-green-400">
-                Gambar siap — buka tab Upscale untuk enhance
-              </p>
+              <div className="mt-2 space-y-2">
+                <p className="text-xs text-green-400">
+                  Gambar siap — buka tab Upscale untuk enhance
+                </p>
+              </div>
             )}
           </div>
         )}
@@ -257,14 +276,38 @@ export function MediaDropzone({
 }
 
 export function UpscalePanel({ initialFile }: { initialFile?: File | null }) {
+  const { logActivity } = useHistory();
   const [preview, setPreview] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const mutation = useMutation({
+  const {
+    mutate: upscaleMutate,
+    isPending,
+    error: upscaleError,
+    isError,
+  } = useMutation({
     mutationFn: (file: File) => api.upscale(file),
-    onSuccess: (data) => {
+    onSuccess: async (data, file) => {
       setResult(`data:image/png;base64,${data.base64}`);
+      await logActivity({
+        type: "upscale",
+        status: "done",
+        title: "Image Upscale",
+        input_summary: file.name,
+        description: "4x upscale selesai",
+        result_url: `data:image/png;base64,${data.base64}`,
+        metadata: { local_path: data.local_path },
+      });
+    },
+    onError: async (err, file) => {
+      await logActivity({
+        type: "upscale",
+        status: "failed",
+        title: "Image Upscale",
+        input_summary: file.name,
+        error_message: (err as Error).message,
+      });
     },
   });
 
@@ -274,15 +317,19 @@ export function UpscalePanel({ initialFile }: { initialFile?: File | null }) {
       const reader = new FileReader();
       reader.onload = () => setPreview(reader.result as string);
       reader.readAsDataURL(file);
-      mutation.mutate(file);
+      upscaleMutate(file);
     },
-    [mutation],
+    [upscaleMutate],
   );
 
+  const processedFileRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (initialFile && isImageFile(initialFile)) {
-      handleFile(initialFile);
-    }
+    if (!initialFile || !isImageFile(initialFile)) return;
+    const key = `${initialFile.name}:${initialFile.size}`;
+    if (processedFileRef.current === key) return;
+    processedFileRef.current = key;
+    handleFile(initialFile);
   }, [initialFile, handleFile]);
 
   return (
@@ -317,7 +364,7 @@ export function UpscalePanel({ initialFile }: { initialFile?: File | null }) {
           }}
           className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border p-8 hover:border-primary/50"
         >
-          {mutation.isPending ? (
+          {isPending ? (
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
           ) : (
             <Upload className="h-8 w-8 text-muted-foreground" />
@@ -327,25 +374,30 @@ export function UpscalePanel({ initialFile }: { initialFile?: File | null }) {
           </p>
         </div>
 
-        {mutation.error && (
+        {upscaleError && (
           <p className="text-sm text-red-400">
-            {(mutation.error as Error).message}
+            {(upscaleError as Error).message}
           </p>
         )}
 
         {(preview || result) && (
-          <div className="grid gap-4 sm:grid-cols-2">
-            {preview && (
-              <div>
-                <p className="mb-2 text-sm font-medium">Original</p>
-                <img src={preview} alt="Original" className="rounded-md border" />
-              </div>
-            )}
-            {result && (
-              <div>
-                <p className="mb-2 text-sm font-medium">Upscaled</p>
-                <img src={result} alt="Upscaled" className="rounded-md border" />
-              </div>
+          <div className="space-y-3">
+            <div className="grid gap-4 sm:grid-cols-2">
+              {preview && (
+                <div>
+                  <p className="mb-2 text-sm font-medium">Original</p>
+                  <img src={preview} alt="Original" className="rounded-md border" />
+                </div>
+              )}
+              {result && (
+                <div>
+                  <p className="mb-2 text-sm font-medium">Upscaled</p>
+                  <img src={result} alt="Upscaled" className="rounded-md border" />
+                </div>
+              )}
+            </div>
+            {(result || isError) && (
+              <ViewHistoryButton />
             )}
           </div>
         )}

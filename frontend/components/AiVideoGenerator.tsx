@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Loader2, Sparkles } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { ViewHistoryButton } from "@/components/HistoryLogsPanel";
+import { useHistory } from "@/contexts/HistoryContext";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -18,6 +20,7 @@ import {
 } from "@/components/ui/card";
 
 export function AiVideoGenerator() {
+  const { logActivity, updateActivityByJobId } = useHistory();
   const [prompt, setPrompt] = useState("");
   const [useComfyui, setUseComfyui] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -42,26 +45,40 @@ export function AiVideoGenerator() {
     };
   }, []);
 
-  const startPolling = useCallback((id: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      try {
-        const job = await api.getJob(id);
-        setJobStatus({
-          status: job.status,
-          progress: job.progress,
-          message: job.message,
-          error: job.error,
-          result_path: job.result_path,
-        });
-        if (job.status === "done" || job.status === "failed") {
-          if (pollRef.current) clearInterval(pollRef.current);
+  const startPolling = useCallback(
+    (id: string) => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(async () => {
+        try {
+          const job = await api.getJob(id);
+          setJobStatus({
+            status: job.status,
+            progress: job.progress,
+            message: job.message,
+            error: job.error,
+            result_path: job.result_path,
+          });
+          if (job.status === "done") {
+            if (pollRef.current) clearInterval(pollRef.current);
+            await updateActivityByJobId(id, {
+              status: "done",
+              description: job.message,
+              result_url: job.result_path ?? undefined,
+            });
+          } else if (job.status === "failed") {
+            if (pollRef.current) clearInterval(pollRef.current);
+            await updateActivityByJobId(id, {
+              status: "failed",
+              error_message: job.error ?? job.message,
+            });
+          }
+        } catch {
+          /* keep polling */
         }
-      } catch {
-        /* keep polling */
-      }
-    }, 3000);
-  }, []);
+      }, 3000);
+    },
+    [updateActivityByJobId],
+  );
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -70,7 +87,7 @@ export function AiVideoGenerator() {
         image_size: "1280x720",
         use_comfyui: useComfyui,
       }),
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       setJobId(data.job_id);
       setJobStatus({
         status: data.status,
@@ -79,18 +96,46 @@ export function AiVideoGenerator() {
         error: null,
         result_path: null,
       });
+      await logActivity({
+        type: "ai-video",
+        status: "processing",
+        title: "AI Video Generation",
+        input_summary: prompt,
+        job_id: data.job_id,
+        metadata: { use_comfyui: useComfyui },
+      });
       startPolling(data.job_id);
+    },
+    onError: async (err) => {
+      await logActivity({
+        type: "ai-video",
+        status: "failed",
+        title: "AI Video Generation",
+        input_summary: prompt,
+        error_message: (err as Error).message,
+      });
     },
   });
 
   const gifMutation = useMutation({
     mutationFn: (localPath: string) =>
       api.mp4ToGif({ local_path: localPath, remove_background: false }),
+    onSuccess: async (data) => {
+      await logActivity({
+        type: "mp4-to-gif",
+        status: "processing",
+        title: "AI Video → GIF",
+        job_id: data.job_id,
+        metadata: { source: "ai-video" },
+      });
+    },
   });
 
   const isProcessing =
     mutation.isPending ||
-    (jobStatus && !["done", "failed"].includes(jobStatus.status));
+    Boolean(
+      jobStatus && !["done", "failed"].includes(jobStatus.status),
+    );
 
   return (
     <Card>
@@ -162,16 +207,19 @@ export function AiVideoGenerator() {
                 <p className="text-sm text-green-400">
                   Video saved: {jobStatus.result_path}
                 </p>
-                <Button
-                  variant="secondary"
-                  disabled={gifMutation.isPending}
-                  onClick={() => gifMutation.mutate(jobStatus.result_path!)}
-                >
-                  {gifMutation.isPending ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : null}
-                  Convert to GIF
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    disabled={gifMutation.isPending}
+                    onClick={() => gifMutation.mutate(jobStatus.result_path!)}
+                  >
+                    {gifMutation.isPending ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : null}
+                    Convert to GIF
+                  </Button>
+                  <ViewHistoryButton />
+                </div>
                 {gifMutation.data && (
                   <Button asChild variant="outline">
                     <a
@@ -184,6 +232,7 @@ export function AiVideoGenerator() {
                 )}
               </div>
             )}
+            {jobStatus.status === "failed" && <ViewHistoryButton />}
           </div>
         )}
       </CardContent>
